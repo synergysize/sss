@@ -1,0 +1,380 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { FlyControls } from 'three/examples/jsm/controls/FlyControls.js';
+import { initializeData, fartcoinHolders, goatTokenHolders, sharedHolders } from './dataLoader.js';
+import { sharedPoints, fartcoinPoints, goatTokenPoints, generateAllPoints } from './positionMapper.js';
+
+// Create a point texture for better visibility
+function createPointTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;  // Larger size for better quality
+  canvas.height = 64; // Larger size for better quality
+  
+  const context = canvas.getContext('2d');
+  const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+  // Make the gradient brighter with a stronger core
+  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.9)');
+  gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.7)');
+  gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.3)');
+  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 64, 64);
+  
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// Create the point sprite texture
+const pointTexture = createPointTexture();
+
+// Initialize the scene, camera, and renderer
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 20000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+
+// Set up renderer
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// Set background color to deep space blue
+scene.background = new THREE.Color(0x000815);
+
+// Define boxCenter at global scope with a default value
+let boxCenter = new THREE.Vector3(0, 0, 0);
+
+// Create starfield background
+function createStarfield() {
+  const geometry = new THREE.BufferGeometry();
+  const starCount = 2000;
+  const positions = new Float32Array(starCount * 3);
+  const sizes = new Float32Array(starCount);
+  
+  // Create stars at random positions with random sizes
+  for (let i = 0; i < starCount; i++) {
+    const i3 = i * 3;
+    // Random position in a large sphere around the scene
+    const radius = 5000 + Math.random() * 10000;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.random() * Math.PI;
+    
+    positions[i3] = radius * Math.sin(phi) * Math.cos(theta);
+    positions[i3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
+    positions[i3 + 2] = radius * Math.cos(phi);
+    
+    // Random sizes between 1 and 5
+    sizes[i] = 1 + Math.random() * 4;
+  }
+  
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+  
+  // Star material with soft glow
+  const starMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 2,
+    transparent: true,
+    opacity: 0.8,
+    sizeAttenuation: true,
+    blending: THREE.AdditiveBlending
+  });
+  
+  // Create stars and add to scene
+  const stars = new THREE.Points(geometry, starMaterial);
+  stars.name = 'starfield';
+  scene.add(stars);
+  
+  return stars;
+}
+
+// Add starfield to the scene
+const starfield = createStarfield();
+
+// Initial camera setup - safe starting position
+camera.position.set(0, 0, 3000); // Positioned directly back from origin
+camera.lookAt(0, 0, 0);
+console.log('Initial camera position set:', camera.position);
+
+// Detect if device is touch-based (mobile/tablet)
+const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+console.log(`Device type detected: ${isTouchDevice ? 'Touch (Mobile/Tablet)' : 'Desktop'}`);
+
+// Initialize appropriate controls based on device type
+let controls;
+let controlType;
+
+if (isTouchDevice) {
+  // Use OrbitControls for touch devices
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+  controls.rotateSpeed = 0.5;
+  controls.screenSpacePanning = false;
+  controls.minDistance = 500;
+  controls.maxDistance = 30000;
+  controlType = 'Orbit';
+  console.log('Using OrbitControls for touch device');
+} else {
+  // Use FlyControls for desktop
+  controls = new FlyControls(camera, renderer.domElement);
+  controls.movementSpeed = 200;
+  controls.dragToLook = true;
+  controls.rollSpeed = 0.5;
+  controlType = 'Fly';
+  console.log('Using FlyControls for desktop');
+}
+
+// Set the target/lookAt point for OrbitControls
+if (controlType === 'Orbit') {
+  controls.target.set(0, 0, 0);
+}
+
+// Initial update
+controls.update();
+
+// Initialize and prepare visualization data
+initializeData();
+generateAllPoints();
+
+// Data verification - check that wallet data was loaded successfully
+if (sharedPoints.length === 0 || fartcoinPoints.length === 0 || goatTokenPoints.length === 0) {
+  console.error('ERROR: Missing wallet data for visualization!');
+} else {
+  console.log('Wallet data loaded successfully:',
+    `${sharedPoints.length} shared wallets,`,
+    `${fartcoinPoints.length} Fartcoin wallets,`,
+    `${goatTokenPoints.length} Goat Token wallets`);
+}
+
+// Create wallet sprites visualization - final implementation
+// Function to create a wallet point cloud with sprites
+function createWalletPointCloud(pointsArray, groupName, color = 0xffffff) {
+  // Create a group to hold all sprites
+  const group = new THREE.Group();
+  group.name = groupName;
+  
+  // Check if we have valid points
+  if (!pointsArray || pointsArray.length === 0) {
+    console.error(`No points available for ${groupName}`);
+    return group;
+  }
+  
+  // Create a sprite for each point
+  pointsArray.forEach((point, index) => {
+    if (isNaN(point.x) || isNaN(point.y) || isNaN(point.z)) {
+      return; // Skip invalid points silently in production
+    }
+    
+    // Enhanced material with glow effect
+    const material = new THREE.SpriteMaterial({
+      map: pointTexture,
+      color: point.color || color,
+      transparent: true,
+      opacity: 0.9, // Slight reduction from 1.0 to enhance glow effect
+      blending: THREE.AdditiveBlending // Restored for glow effect
+    });
+    
+    const sprite = new THREE.Sprite(material);
+    
+    // Position the sprite
+    sprite.position.set(point.x, point.y, point.z);
+    
+    // Calculate scale based on amount, with minimum scale to ensure visibility
+    const baseScale = point.amount ? (Math.log(point.amount) * 10) : 200;
+    const scale = Math.max(200, baseScale * 3); // Minimum 200 units and 300% scale increase
+    sprite.scale.set(scale, scale, 1);
+    
+    // Add to group
+    group.add(sprite);
+  });
+  
+  // Add the group to the scene
+  scene.add(group);
+  
+  return group;
+}
+
+// Create all wallet point clouds
+if (sharedPoints.length > 0 && fartcoinPoints.length > 0 && goatTokenPoints.length > 0) {
+  // Create point clouds for each dataset
+  const sharedGroup = createWalletPointCloud(sharedPoints, 'sharedWallets', 0xffffff);
+  const fartcoinGroup = createWalletPointCloud(fartcoinPoints, 'fartcoinWallets', 0x00ff00);
+  const goatTokenGroup = createWalletPointCloud(goatTokenPoints, 'goatTokenWallets', 0x0000ff);
+  
+  // Calculate bounding box for camera positioning - enhanced version
+  const boundingBox = new THREE.Box3();
+  
+  // Initialize with empty but valid volume to avoid "empty bounding box" issues
+  boundingBox.set(
+    new THREE.Vector3(-1, -1, -1),
+    new THREE.Vector3(1, 1, 1)
+  );
+  
+  // Function to safely add all sprites from a group to the bounding box
+  const addGroupToBoundingBox = (group) => {
+    if (group && group.children && group.children.length > 0) {
+      console.log(`Adding ${group.name} with ${group.children.length} sprites to bounding box`);
+      
+      // Expand bounding box with each sprite position individually to ensure accuracy
+      group.children.forEach(sprite => {
+        if (sprite && sprite.position) {
+          boundingBox.expandByPoint(sprite.position);
+        }
+      });
+    } else {
+      console.warn(`Group ${group?.name || 'unknown'} has no children or is invalid`);
+    }
+  };
+  
+  // Add all wallet groups to the bounding box
+  addGroupToBoundingBox(sharedGroup);
+  addGroupToBoundingBox(fartcoinGroup);
+  addGroupToBoundingBox(goatTokenGroup);
+  
+  // Fit camera to view the bounding box
+  boxCenter = boundingBox.getCenter(new THREE.Vector3()); // Update global boxCenter instead of creating a new const
+  const boxSize = boundingBox.getSize(new THREE.Vector3());
+  
+  // Always ensure we have a valid bounding box with minimum dimensions
+  const maxDim = Math.max(
+    Math.max(1, boxSize.x),
+    Math.max(1, boxSize.y),
+    Math.max(1, boxSize.z)
+  );
+  
+  console.log('Bounding box center:', boxCenter);
+  console.log('Bounding box size:', boxSize);
+  console.log('Max dimension:', maxDim);
+  
+  // Force a minimum size for the camera view to ensure objects are visible
+  const cameraDistance = Math.max(3000, maxDim * 2.5);
+  
+  // Position the camera to fit the bounding box - improved positioning
+  camera.position.set(
+    boxCenter.x, 
+    boxCenter.y + maxDim * 0.5, // Position slightly above center
+    boxCenter.z + cameraDistance // Position further back to ensure visibility
+  );
+  
+  // Look at the center of the wallet cloud
+  camera.lookAt(boxCenter);
+  
+  // Force update controls to match new camera position
+  if (controlType === 'Orbit') {
+    controls.target.copy(boxCenter);
+  }
+  
+  // Always force an update of controls after changing camera position
+  controls.update();
+  
+  console.log('Camera positioned at:', camera.position);
+  console.log('Camera looking at:', boxCenter);
+  
+  // Additional safety measure - backup camera position
+  if (isNaN(camera.position.x) || isNaN(camera.position.y) || isNaN(camera.position.z)) {
+    console.warn('Invalid camera position detected, using fallback position');
+    camera.position.set(0, 500, 3000);
+    camera.lookAt(0, 0, 0);
+    controls.update();
+  }
+  
+  console.log('Camera positioned at:', camera.position);
+  console.log('Camera looking at:', boxCenter);
+  
+  console.log('Visualization ready: Production mode enabled with',
+    sharedGroup.children.length + fartcoinGroup.children.length + goatTokenGroup.children.length,
+    'wallet sprites rendered.');
+} else {
+  console.error('Error: Missing wallet data for visualization.');
+}
+
+// Update controls instructions based on detected control type
+const controlsElement = document.getElementById('controls');
+if (controlsElement) {
+  if (controlType === 'Fly') {
+    controlsElement.innerHTML = '<p>WASD/Arrows: Move | Q/E: Roll | Drag: Look</p>';
+    
+    // Add desktop-specific keyboard instructions for FlyControls
+    if (!isTouchDevice) {
+      controlsElement.innerHTML += '<p>Use keyboard to navigate through the space</p>';
+    }
+  } else {
+    controlsElement.innerHTML = '<p>Left Click: Rotate | Right Click: Pan | Scroll: Zoom</p>';
+  }
+}
+
+// Handle window resize
+window.addEventListener('resize', () => {
+  // Update camera aspect
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  
+  // Check if device type changed (e.g., orientation change might affect detection)
+  const currentIsTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+  const expectedControlType = currentIsTouchDevice ? 'Orbit' : 'Fly';
+  
+  // If control type doesn't match the current device type, reload to reinitialize
+  if (controlType !== expectedControlType) {
+    console.log(`Device type changed to ${currentIsTouchDevice ? 'touch' : 'desktop'}, reloading controls`);
+    location.reload();
+  }
+});
+
+// Render loop
+const clock = new THREE.Clock();
+
+// Add counter to limit logging frequency (don't spam console)
+let frameCounter = 0;
+const logInterval = 60; // Log every 60 frames (approx. every 1 second at 60fps)
+
+// Store initial camera position and target for recovery if needed
+const initialCameraPosition = camera.position.clone();
+const initialCameraTarget = boxCenter.clone(); // boxCenter is now guaranteed to exist
+console.log('Stored initial camera state:', initialCameraPosition, initialCameraTarget);
+
+function animate() {
+  requestAnimationFrame(animate);
+  
+  const delta = clock.getDelta();
+  
+  // Update controls - FlyControls requires delta, OrbitControls ignores it
+  controls.update(delta);
+  
+  // Subtle starfield rotation for ambient movement
+  if (starfield) {
+    starfield.rotation.y += delta * 0.01;
+    starfield.rotation.x += delta * 0.005;
+  }
+  
+  // Log camera position and control type periodically
+  frameCounter++;
+  if (frameCounter % logInterval === 0) {
+    console.log(`Camera position: (${camera.position.x.toFixed(0)}, ${camera.position.y.toFixed(0)}, ${camera.position.z.toFixed(0)})`);
+    console.log(`Active control type: ${controlType}`);
+    
+    // Check if camera is valid (preventing NaN positions that cause black screen)
+    if (isNaN(camera.position.x) || isNaN(camera.position.y) || isNaN(camera.position.z)) {
+      console.warn('Invalid camera position detected during animation, resetting to initial position');
+      camera.position.copy(initialCameraPosition);
+      
+      if (controlType === 'Orbit') {
+        controls.target.copy(initialCameraTarget);
+      } else {
+        camera.lookAt(initialCameraTarget);
+      }
+      
+      controls.update();
+    }
+    
+    // Reset counter to avoid potential overflow
+    if (frameCounter > 1000) frameCounter = 0;
+  }
+  
+  renderer.render(scene, camera);
+}
+
+animate();
